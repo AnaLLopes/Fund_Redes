@@ -1,0 +1,41 @@
+services:
+  node_a:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: token-ring-java
+    container_name: node_a
+    command: ["config_A.txt"]
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    networks:
+      - token_ring_net
+
+  node_b:
+    image: token-ring-java
+    container_name: node_b
+    command: ["config_B.txt"]
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    depends_on:
+      - node_a
+    networks:
+      - token_ring_net
+
+  node_c:
+    image: token-ring-java
+    container_name: node_c
+    command: ["config_C.txt"]
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    depends_on:
+      - node_a
+    networks:
+      - token_ring_net
+
+networks:
+  token_ring_net:
+    driver: bridge
