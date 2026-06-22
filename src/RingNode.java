@@ -8,14 +8,13 @@ import java.util.concurrent.atomic.*;
  * Responsabilidades:
  *   1. Descoberta de máquinas via DISCOVER/HELLO (broadcast na porta 6000).
  *   2. Construção e reconfiguração da topologia do anel (ordem alfabética).
- *   3. Circulação do token e transmissão de dados (porta 5000).
+ *   3. Circulação do token e transmissão de dados (porta 6000).
  *   4. Detecção de token perdido (timeout) e token duplicado (tempo mínimo).
  *   5. Controle de erro via CRC32 e módulo de inserção de falhas.
  *   6. Interface de usuário via linha de comando.
  *
  * Threads:
- *   - DiscListener  : escuta DISCOVER/HELLO na porta 6000 (tempo todo).
- *   - RingListener  : escuta TOKEN/DATA na porta 5000 (tempo todo).
+ *   - DiscListener  : escuta DISCOVER/HELLO/TOKEN/DATA na porta 6000 (tempo todo).
  *   - TokenMonitor  : monitora timeout do token (somente na máquina controladora).
  *   - Thread main   : loop de entrada do usuário.
  */
@@ -23,7 +22,7 @@ public class RingNode {
 
     //                         Constantes                                
     static final int    DISC_PORT         = 6000;
-    static final int    RING_PORT         = 5000;
+    static final int    RING_PORT         = 6000;
     static final int    DISC_DURATION_MS  = 5000;  // Tempo de descoberta inicial (ms)
     static final String BROADCAST_DEST    = "BROADCAST";
 
@@ -37,8 +36,8 @@ public class RingNode {
     volatile boolean     amController = false; // Esta máquina gera/controla o token?
 
     // ─── Sockets ──────────────────────────────────────────────────────
-    DatagramSocket discSock;  // Porta 6000 — descoberta
-    DatagramSocket ringSock;  // Porta 5000 — anel (token + dados)
+    DatagramSocket discSock;  // Porta 6000 — socket único para descoberta + anel
+    DatagramSocket ringSock;  // Alias para o mesmo socket, usado no envio do anel
 
     // ─── Fila e módulos ───────────────────────────────────────────────
     final MessageQueue  mq     = new MessageQueue();
@@ -67,25 +66,16 @@ public class RingNode {
         myIP = detectIP();
         log("Iniciando nó '" + cfg.nickname + "' em " + myIP + " | " + cfg);
 
-        // Abre socket de descoberta (porta 6000, broadcast)
+        // Abre socket único na porta 6000 para descoberta e anel
         discSock = new DatagramSocket(DISC_PORT);
         discSock.setBroadcast(true);
         discSock.setSoTimeout(300);
-
-        // // Abre socket do anel (porta 5000)
-        // ringSock = new DatagramSocket(RING_PORT);
-        // ringSock.setSoTimeout(300);
+        ringSock = discSock;
 
         // Registra a si mesmo no anel
         ring.add(new MachineInfo(cfg.nickname, myIP));
 
         doDiscovery();  // Fase 1 — Descoberta
-
-        discSock.close(); // Não precisa mais do socket de descoberta
-
-        // Abre socket do anel (porta 5000)
-        ringSock = new DatagramSocket(RING_PORT);
-        ringSock.setSoTimeout(300);
 
         buildRing();    // Fase 2 — Construção do anel
         operate();      // Fase 3 — Operação normal
@@ -96,7 +86,7 @@ public class RingNode {
     void doDiscovery() throws Exception {
         log("   FASE DE DESCOBERTA (" + DISC_DURATION_MS / 1000 + "s)           ");
 
-        // Thread de escuta de DISCOVER/HELLO roda durante toda a execução
+        // Thread de escuta única roda durante toda a execução
         Thread dl = new Thread(this::discListener, "DiscListener");
         dl.setDaemon(true);
         dl.start();
@@ -109,7 +99,6 @@ public class RingNode {
         }
 
         discPhase = false;
-        dl.interrupt(); // Encerra a thread de escuta de descoberta
         log("   Descoberta concluída — " + ring.size() + " máquina(s) encontrada(s)    ");
     }
 
@@ -125,7 +114,7 @@ public class RingNode {
         log("[HELLO  ->] " + pkt);
     }
 
-    /** Thread que escuta pacotes de descoberta na porta 6000. */
+    /** Thread única que escuta DISCOVER/HELLO/TOKEN/DATA na porta 6000. */
     void discListener() {
         byte[] buf = new byte[512];
         while (running) {
@@ -133,15 +122,22 @@ public class RingNode {
                 DatagramPacket dp = new DatagramPacket(buf, buf.length);
                 discSock.receive(dp);
                 String raw = new String(dp.getData(), 0, dp.getLength()).trim();
-                onDiscPacket(raw);
+                int type = Packet.getType(raw);
+                if (type == Packet.TYPE_DISCOVER || type == Packet.TYPE_HELLO) {
+                    onDiscPacket(raw);
+                } else if (type == Packet.TYPE_TOKEN || type == Packet.TYPE_DATA) {
+                    onRingPacket(raw);
+                } else {
+                    log("[UDP] Pacote desconhecido ignorado: " + raw);
+                }
             } catch (SocketTimeoutException ignored) {
             } catch (SocketException e) {
                 if (running && discSock != null && !discSock.isClosed()) {
-                    log("[DISC] Erro na escuta: " + e.getMessage());
+                    log("[UDP] Erro na escuta: " + e.getMessage());
                 }
                 break;
             } catch (Exception e) {
-                if (running) log("[DISC] Erro na escuta: " + e.getMessage());
+                if (running) log("[UDP] Erro na escuta: " + e.getMessage());
             }
         }
     }
@@ -226,11 +222,6 @@ public class RingNode {
     //                        OPERAÇÃO DO ANEL                           
 
     void operate() throws Exception {
-        // Thread de escuta do anel (token + dados)
-        Thread rl = new Thread(this::ringListener, "RingListener");
-        rl.setDaemon(true);
-        rl.start();
-
         // Somente a primeira máquina (controladora) gera o token e o monitora
         if (amController) {
             Thread tm = new Thread(this::tokenMonitor, "TokenMonitor");
@@ -253,28 +244,6 @@ public class RingNode {
 
         // Thread principal vira o loop de entrada do usuário
         userInputLoop();
-    }
-
-    // ─── Escuta do anel ───────────────────────────────────────────────
-
-    void ringListener() {
-        byte[] buf = new byte[4096];
-        while (running) {
-            try {
-                DatagramPacket dp = new DatagramPacket(buf, buf.length);
-                ringSock.receive(dp);
-                String raw = new String(dp.getData(), 0, dp.getLength()).trim();
-                onRingPacket(raw);
-            } catch (SocketTimeoutException ignored) {
-            } catch (SocketException e) {
-                if (running && ringSock != null && !ringSock.isClosed()) {
-                    log("[RING] Erro na escuta: " + e.getMessage());
-                }
-                break;
-            } catch (Exception e) {
-                if (running) log("[RING] Erro na escuta: " + e.getMessage());
-            }
-        }
     }
 
     /** Despacha o pacote recebido no anel para o handler correto. */
@@ -309,18 +278,25 @@ public class RingNode {
         // ── Controle do token (somente na controladora) ──────────────
         if (amController) {
             long elapsed = now - lastTokenAt.get();
+            boolean singleNodeRing = ring.size() <= 1 || successor == null
+                || successor.nickname.equals(cfg.nickname);
 
             if (acceptRecoveredToken.getAndSet(false)) {
                 lastTokenAt.set(now);
                 log("[TOKEN] ◆ Recebido (token recuperado após timeout)");
-            } else if (lastTokenAt.get() > 0 && elapsed < cfg.minTimeBetweenTokens * 1000L) {
+            } else if (!singleNodeRing && lastTokenAt.get() > 0
+                && elapsed < cfg.minTimeBetweenTokens * 1000L) {
                 // Token duplicado? Chegou rápido demais.
                 log("⚠ [TOKEN] TOKEN DUPLICADO detectado! elapsed=" + elapsed
                     + "ms < " + (cfg.minTimeBetweenTokens * 1000L) + "ms  -> REMOVENDO");
                 return; // Não encaminha — descarta o token extra
             } else {
                 lastTokenAt.set(now);
-                log("[TOKEN] ◆ Recebido (elapsed=" + elapsed + "ms desde o último)");
+                if (singleNodeRing && lastTokenAt.get() > 0) {
+                    log("[TOKEN] ◆ Recebido (anel de 1 nó; duplicidade desativada)");
+                } else {
+                    log("[TOKEN] ◆ Recebido (elapsed=" + elapsed + "ms desde o último)");
+                }
             }
         } else {
             log("[TOKEN] ◆ Recebido");

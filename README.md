@@ -119,7 +119,7 @@ O anel é formado em **ordem alfabética** dos apelidos. O último nó conecta a
 | Thread          | Função                                                    |
 |-----------------|-----------------------------------------------------------|
 | `DiscListener`  | Escuta DISCOVER/HELLO na porta 6000 (tempo todo)          |
-| `RingListener`  | Escuta TOKEN/DATA na porta 5000 (tempo todo)              |
+| `RingListener`  | Escuta TOKEN/DATA na porta 6000 (tempo todo)              |
 | `TokenMonitor`  | Monitora timeout do token (somente na controladora)       |
 | Thread principal| Loop de entrada de comandos do usuário                    |
 
@@ -157,4 +157,4 @@ flags de remoção usam `AtomicLong` e `AtomicBoolean`.
 | Porta | Uso                                         |
 |-------|---------------------------------------------|
 | 6000  | Descoberta (DISCOVER / HELLO) — broadcast   |
-| 5000  | Anel (TOKEN / DATA) — unicast ao sucessor   |
+| 6000  | Anel (TOKEN / DATA) — unicast ao sucessor   |

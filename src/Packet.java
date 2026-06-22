@@ -4,8 +4,8 @@
  * Tipos de pacotes:
  *   DISCOVER  →  "10:<apelido>:<ip>"        (broadcast na porta 6000)
  *   HELLO     →  "20:<apelido>:<ip>"        (broadcast na porta 6000)
- *   TOKEN     →  "1000"                     (unicast na porta 5000)
- *   DATA      →  "2000:<origem>:<destino>:<controle>:<crc>:<mensagem>"  (porta 5000)
+ *   TOKEN     →  "1000"                     (unicast na porta 6000)
+ *   DATA      →  "2000:<origem>:<destino>:<controle>:<crc>:<mensagem>"  (porta 6000)
  *
  * Valores do campo controle em pacotes DATA:
  *   "maquinainexistente"  → origem envia, destino não foi encontrado no anel
