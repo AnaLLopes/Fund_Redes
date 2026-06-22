@@ -16,6 +16,16 @@ public class Config {
     public double tokenTimeout;       // Segundos até considerar token perdido
     public int    minTimeBetweenTokens; // Segundos mínimos entre passagens do token
 
+    public Config(String nickname, int tokenDataTime, int errorProbability, double tokenTimeout, int minTimeBetweenTokens) {
+        this.nickname = nickname;
+        this.tokenDataTime = tokenDataTime;
+        this.errorProbability = errorProbability;
+        this.tokenTimeout = tokenTimeout;
+        this.minTimeBetweenTokens = minTimeBetweenTokens;
+    }
+
+    public Config(){}
+
     public static Config readFromFile(String filename) throws IOException {
         try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
             Config c = new Config();

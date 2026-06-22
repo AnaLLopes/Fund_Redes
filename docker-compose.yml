@@ -10,7 +10,7 @@ services:
     tty: true
     restart: unless-stopped
     networks:
-      - token_ring_net
+      - shared_ring_net
 
   node_b:
     image: token-ring-java
@@ -22,7 +22,7 @@ services:
     depends_on:
       - node_a
     networks:
-      - token_ring_net
+      - shared_ring_net
 
   node_c:
     image: token-ring-java
@@ -34,8 +34,9 @@ services:
     depends_on:
       - node_a
     networks:
-      - token_ring_net
+      - shared_ring_net
 
 networks:
-  token_ring_net:
-    driver: bridge
+  shared_ring_net:
+    external: true
+    name: redes_token_ring_net

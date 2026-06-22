@@ -47,6 +47,7 @@ public class RingNode {
     // ─── Controle do token ────────────────────────────────────────────
     final AtomicLong    lastTokenAt = new AtomicLong(0); // Timestamp da última passagem
     final AtomicBoolean dropToken   = new AtomicBoolean(false); // Remover próximo token?
+    final AtomicBoolean acceptRecoveredToken = new AtomicBoolean(false); // Ignorar a próxima checagem de duplicidade após timeout
     volatile boolean    sentData    = false; // Aguardando retorno de pacote de dados?
 
     // ─── Ciclo de vida ────────────────────────────────────────────────
@@ -71,14 +72,21 @@ public class RingNode {
         discSock.setBroadcast(true);
         discSock.setSoTimeout(300);
 
-        // Abre socket do anel (porta 5000)
-        ringSock = new DatagramSocket(RING_PORT);
-        ringSock.setSoTimeout(300);
+        // // Abre socket do anel (porta 5000)
+        // ringSock = new DatagramSocket(RING_PORT);
+        // ringSock.setSoTimeout(300);
 
         // Registra a si mesmo no anel
         ring.add(new MachineInfo(cfg.nickname, myIP));
 
         doDiscovery();  // Fase 1 — Descoberta
+
+        discSock.close(); // Não precisa mais do socket de descoberta
+
+        // Abre socket do anel (porta 5000)
+        ringSock = new DatagramSocket(RING_PORT);
+        ringSock.setSoTimeout(300);
+
         buildRing();    // Fase 2 — Construção do anel
         operate();      // Fase 3 — Operação normal
     }
@@ -101,6 +109,7 @@ public class RingNode {
         }
 
         discPhase = false;
+        dl.interrupt(); // Encerra a thread de escuta de descoberta
         log("   Descoberta concluída — " + ring.size() + " máquina(s) encontrada(s)    ");
     }
 
@@ -126,6 +135,11 @@ public class RingNode {
                 String raw = new String(dp.getData(), 0, dp.getLength()).trim();
                 onDiscPacket(raw);
             } catch (SocketTimeoutException ignored) {
+            } catch (SocketException e) {
+                if (running && discSock != null && !discSock.isClosed()) {
+                    log("[DISC] Erro na escuta: " + e.getMessage());
+                }
+                break;
             } catch (Exception e) {
                 if (running) log("[DISC] Erro na escuta: " + e.getMessage());
             }
@@ -219,15 +233,22 @@ public class RingNode {
 
         // Somente a primeira máquina (controladora) gera o token e o monitora
         if (amController) {
-            lastTokenAt.set(System.currentTimeMillis());
-
             Thread tm = new Thread(this::tokenMonitor, "TokenMonitor");
             tm.setDaemon(true);
             tm.start();
 
-            Thread.sleep(500); // Aguarda outros nós ficarem prontos
-            log("★★★ Gerando token inicial ★★★");
-            sendToken();
+            Thread startupToken = new Thread(() -> {
+                try {
+                    Thread.sleep(500); // Aguarda outros nós ficarem prontos
+                    log("★★★ Gerando token inicial ★★★");
+                    sendToken();
+                } catch (InterruptedException ignored) {
+                } catch (Exception e) {
+                    log("[TOKEN] Erro ao gerar token inicial: " + e.getMessage());
+                }
+            }, "StartupToken");
+            startupToken.setDaemon(true);
+            startupToken.start();
         }
 
         // Thread principal vira o loop de entrada do usuário
@@ -245,6 +266,11 @@ public class RingNode {
                 String raw = new String(dp.getData(), 0, dp.getLength()).trim();
                 onRingPacket(raw);
             } catch (SocketTimeoutException ignored) {
+            } catch (SocketException e) {
+                if (running && ringSock != null && !ringSock.isClosed()) {
+                    log("[RING] Erro na escuta: " + e.getMessage());
+                }
+                break;
             } catch (Exception e) {
                 if (running) log("[RING] Erro na escuta: " + e.getMessage());
             }
@@ -284,15 +310,18 @@ public class RingNode {
         if (amController) {
             long elapsed = now - lastTokenAt.get();
 
-            // Token duplicado? Chegou rápido demais.
-            if (lastTokenAt.get() > 0 && elapsed < cfg.minTimeBetweenTokens * 1000L) {
+            if (acceptRecoveredToken.getAndSet(false)) {
+                lastTokenAt.set(now);
+                log("[TOKEN] ◆ Recebido (token recuperado após timeout)");
+            } else if (lastTokenAt.get() > 0 && elapsed < cfg.minTimeBetweenTokens * 1000L) {
+                // Token duplicado? Chegou rápido demais.
                 log("⚠ [TOKEN] TOKEN DUPLICADO detectado! elapsed=" + elapsed
                     + "ms < " + (cfg.minTimeBetweenTokens * 1000L) + "ms  -> REMOVENDO");
                 return; // Não encaminha — descarta o token extra
+            } else {
+                lastTokenAt.set(now);
+                log("[TOKEN] ◆ Recebido (elapsed=" + elapsed + "ms desde o último)");
             }
-
-            lastTokenAt.set(now);
-            log("[TOKEN] ◆ Recebido (elapsed=" + elapsed + "ms desde o último)");
         } else {
             log("[TOKEN] ◆ Recebido");
         }
@@ -427,6 +456,7 @@ public class RingNode {
                             log("⚠ [TOKEN MONITOR] TIMEOUT! " + elapsed + "ms sem token."
                                 + " Token perdido  -> gerando novo token.");
                             lastTokenAt.set(now);
+                            acceptRecoveredToken.set(true);
                             sentData = false; // Qualquer envio pendente é considerado perdido
                             sendToken();
                         }
